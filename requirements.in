@@ -1,0 +1,6 @@
+pip-tools
+tqdm
+python-dotenv
+pytest-playwright
+playwright
+pytest
