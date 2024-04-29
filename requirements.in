@@ -4,3 +4,4 @@ python-dotenv
 pytest-playwright
 playwright
 pytest
+pyperclip

@@ -4,138 +4,82 @@ from tqdm import tqdm
 from playwright.sync_api import sync_playwright
 from dotenv import load_dotenv
 import time
+import re
+import argparse
+import pyperclip
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Export Workbench Chats with Optional Browser Storage Management")
+    parser.add_argument('--save-storage', type=str, help='Path to save browser storage')
+    parser.add_argument('--load-storage', type=str, help='Path to load browser storage')
+    return parser.parse_args()
 
-def main(output_format="json", headless=False, timeout=3000000):
+def setup_browser(headless=False):
+    playwright = sync_playwright().start()
+    browser = playwright.chromium.launch(headless=headless)
+    page = browser.new_page()
+    return browser, page
+        
+def login_and_navigate(page, timeout):
+    print("Navigating to Anthropic...")
+    page.goto("https://console.anthropic.com")
+    print("Anthropic loaded.")
+    print("Logging in...")
+    page.get_by_test_id("email").click()
+    page.get_by_test_id("email").fill(os.environ["ANTHROPIC_EMAIL"])
+    print("Email entered.")
+    page.get_by_test_id("code").click()
+    print("Clicked 'Continue'.")
+    print("Waiting for login code input...")
+    page.wait_for_url("https://console.anthropic.com/dashboard", timeout=timeout)
+    print("Dashboard loaded.")
+    context = page.context()
+    context.storage_state(path="auth.json")
+
+def main(output_format="json", headless=False, timeout=10000000, load_storage_path="auth.json"):
     print("Starting export of workbench chats...")
-    with sync_playwright() as p:
-        print("Launching browser...")
-        browser = p.firefox.launch(headless=headless)
-        print("Browser launched.")
-        page = browser.new_page()
-        print("New page created.")
-        try:
-            print("Navigating to Anthropic...")
-            page.goto("https://console.anthropic.com")
-            print("Anthropic loaded.")
-            print("Logging in...")
+    browser, page = setup_browser(headless)
+    if load_storage_path and os.path.exists(load_storage_path):
+        browser.new_context(storage_state=load_storage_path)
+        context = browser.new_context(storage_state="auth.json")
+        page = context.new_page()
+    else:
+        login_and_navigate(page, timeout)
+    
+    page.goto("https://console.anthropic.com/workbench")
+    page.get_by_label("Your prompts").click()
+    unnamed_chats_list = page.get_by_role("button", name=re.compile(r"Untitled - \d{4}-\d{2}-\d{2} \d{1,2}:\d{2}(:\d{2})?( (AM|PM|a\.m\.|p\.m\.))?"))
+    unnamed_chats_count = unnamed_chats_list.count()
+    print(unnamed_chats_list.all_inner_texts())
+    print("Number of unnamed chats: ", unnamed_chats_count)
+    chat_names = []
+    for i in range(unnamed_chats_count):
+        chat = unnamed_chats_list.nth(i)
+        chat_name = re.search(r"Untitled - \d{4}-\d{2}-\d{2} \d{1,2}:\d{2}:\d{2}", chat.inner_text()).group()
+        print(chat_name)
+        chat_names.append(chat_name)    
 
-            page.wait_for_selector("input#email", timeout=timeout)
-            page.fill("input#email", value=os.environ["ANTHROPIC_EMAIL"])
-            print("Email entered.")
-            page.wait_for_selector("button:has-text('Continue')", timeout=timeout)
-            page.click("button:has-text('Continue')")
-            print("Clicked 'Continue'.")
-            print("Waiting for login code input...")
-            page.wait_for_url(
-                "https://console.anthropic.com/dashboard", timeout=timeout
-            )
-            print("Dashboard loaded.")
-            page.goto("https://console.anthropic.com/workbench")
-            print("Workbench loaded.")
+    for chat_name in chat_names:
+        page.get_by_role("button", name=chat_name).click()
+        print(f"Getting conversation code for {chat_name}...")
+        page.get_by_role("button", name="Get Code").click()
+        print("Conversation code gotten.")
+        page.get_by_role("button", name="Copy Code").click()
+        print("Conversation code copied.")
+        page.get_by_role("button").nth(2).click()
+        print("Exporting conversation code...")
+        chat_code = pyperclip.paste()
+        print(chat_code)
+        
+        file_path = f"chats/{chat_name}.txt"
+        with open(file_path, "w") as file:
+            file.write(chat_code)
+        print(f"Saved conversation code for {chat_name} to {file_path}")
 
-            max_retries = 3
-            retry_delay = 5  # Delay in seconds between retries
-            for retry in tqdm(range(max_retries), desc="Retrying"):
-                try:
-                    page.wait_for_selector(
-                        "button[aria-label='Your prompts']", timeout=timeout
-                    )
-                    print("'your prompts' button found.")
-                    break
-                except TimeoutError:
-                    if retry == max_retries - 1:
-                        raise
-                    print(
-                        f"Selector not found. Retrying in {retry_delay} seconds... (Attempt {retry + 1})"
-                    )
-                    time.sleep(retry_delay)
-            page.click("button[aria-label='Your prompts']")
-            print("Clicked 'your prompts'.")
-
-            # ==================================================================================
-            # IMPORTANT: This script is currently in development.
-            # This repo is a homework problem for my project in berkeley ai safety's supervised program for alignment research.
-            # The script is not yet complete and is not guaranteed to work as expected from this point onwards.
-            # ==================================================================================
-
-            page.wait_for_selector("ul.flex.flex-col.gap-1", timeout=timeout)
-            print("Prompt list loaded.")
-            conversations = page.query_selector_all(
-                "button.inline-flex.items-center.justify-center.relative"
-            )
-            print("Conversations found.")
-            for i, conversation in tqdm(
-                enumerate(conversations), total=len(conversations)
-            ):
-                print(f"Exporting conversation {i+1}...")
-                conversation.click()
-                page.wait_for_selector(".message-list", timeout=timeout)
-                print("Conversation loaded.")
-                # Get conversation title, handle potential missing title
-                title_element = conversation.query_selector(
-                    "div.font-bold.text-left.truncate.w-full.min-w-\[0px\]"
-                )
-                title = (
-                    title_element.inner_text()
-                    if title_element
-                    else f"conversation_{i+1}"
-                )
-                print("Title found.")
-                folder_name = f"conversation_{i+1}_{title}"
-                os.makedirs(folder_name, exist_ok=True)
-                print("Folder created.")
-                prompts = []
-                for prompt in tqdm(
-                    page.query_selector_all(".user-message"),
-                    total=len(page.query_selector_all(".user-message")),
-                ):
-                    content_element = prompt.query_selector(".message-content")
-                    timestamp_element = prompt.query_selector(".message-timestamp")
-
-                    # Handle potential missing content or timestamp
-                    content = content_element.inner_text() if content_element else ""
-                    timestamp = (
-                        timestamp_element.inner_text() if timestamp_element else ""
-                    )
-
-                    prompts.append({"content": content, "timestamp": timestamp})
-                print("Prompts extracted.")
-                if output_format == "json":
-                    with open(f"{folder_name}/prompts.json", "w") as f:
-                        json.dump(prompts, f, indent=2)
-                else:
-                    with open(f"{folder_name}/prompts.txt", "w") as f:
-                        for prompt in prompts:
-                            f.write(
-                                f"Content: {prompt['content']}\nTimestamp: {prompt['timestamp']}\n\n"
-                            )
-                print("Prompts written to file.")
-                # Handle potential missing "get code" button
-                get_code_button = page.query_selector("text=get code")
-                if get_code_button:
-                    get_code_button.click()
-                    page.wait_for_selector(".api-code-modal", timeout=timeout)
-
-                    api_code_element = page.query_selector(".api-code-content")
-                    api_code = api_code_element.inner_text() if api_code_element else ""
-
-                    with open(f"{folder_name}/api_code.txt", "w") as f:
-                        f.write(api_code)
-                    print("API code written to file.")
-                    close_button = page.query_selector(".api-code-modal .close-button")
-                    if close_button:
-                        close_button.click()
-                else:
-                    print(f"Warning: 'get code' button not found for {folder_name}")
-                print(f"Conversation {i+1} exported.")
-        except Exception as e:
-            print(f"An error occurred: {str(e)}")
-        finally:
-            browser.close()
-            print("Browser closed.")
-
+        page.goto("https://console.anthropic.com/workbench")
+        page.get_by_label("Your prompts").click()
 
 if __name__ == "__main__":
+    args = parse_args()
     load_dotenv()
-    main(output_format="json", headless=False, timeout=3000000)
+    main(output_format="json", headless=False, timeout=10000000, load_storage_path=args.load_storage)

@@ -1,2 +1,10 @@
 .env
 .pytest_cache
+auth.json
+chats/
+playwright/.auth
+node_modules/
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
